@@ -898,6 +898,111 @@ a {
   font-size: 12px;
 }
 
+.challenge-trading-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 380px) minmax(0, 1fr);
+  gap: 20px;
+}
+
+.challenge-trading-grid-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.challenge-trade-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.challenge-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.challenge-field span,
+.challenge-position-list h3,
+.challenge-portfolio-grid span,
+.challenge-position-row span {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.challenge-field span {
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.challenge-trade-note {
+  grid-column: 1 / -1;
+  min-height: 92px;
+}
+
+.challenge-trade-form .btn {
+  width: fit-content;
+  justify-content: center;
+}
+
+.challenge-portfolio-panel {
+  min-width: 0;
+}
+
+.challenge-portfolio-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
+  gap: 10px;
+}
+
+.challenge-portfolio-grid div {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: rgba(18, 27, 34, 0.54);
+}
+
+.challenge-portfolio-grid strong {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 17px;
+  overflow-wrap: anywhere;
+}
+
+.challenge-position-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.challenge-position-list h3 {
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.challenge-position-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(70px, 110px) minmax(70px, 110px);
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: rgba(18, 27, 34, 0.48);
+  font-size: 13px;
+}
+
+.challenge-position-row strong {
+  color: var(--text-primary);
+  text-align: right;
+}
+
+.challenge-empty-compact {
+  min-height: auto;
+  padding: 12px;
+}
+
 .challenge-submit-form {
   display: grid;
   gap: 12px;
@@ -936,6 +1041,11 @@ a {
 :root[data-theme='light'] .challenge-metrics-strip div {
   background: linear-gradient(180deg, rgba(248, 243, 234, 0.96), rgba(243, 237, 227, 0.94));
   border-color: rgba(108, 87, 58, 0.12);
+}
+
+:root[data-theme='light'] .challenge-portfolio-grid div,
+:root[data-theme='light'] .challenge-position-row {
+  background: rgba(232, 223, 207, 0.56);
 }
 
 .tags {
@@ -3117,6 +3227,9 @@ a {
   .challenge-metrics-strip,
   .challenge-detail-grid,
   .challenge-create-grid,
+  .challenge-trading-grid,
+  .challenge-trade-form,
+  .challenge-portfolio-grid,
   .team-metrics,
   .team-grid,
   .team-create-grid,
@@ -3130,6 +3243,7 @@ a {
   }
 
   .challenge-rank-row,
+  .challenge-position-row,
   .team-rank-row,
   .team-member-row,
   .team-message-row,
@@ -3137,6 +3251,14 @@ a {
   .experiment-assignment-row,
   .research-event-row {
     grid-template-columns: 44px minmax(0, 1fr);
+  }
+
+  .challenge-position-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .challenge-position-row strong {
+    text-align: left;
   }
 
   .challenge-rank-header {

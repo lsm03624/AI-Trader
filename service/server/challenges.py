@@ -1,4 +1,4 @@
-"""Challenge creation, participation, submission, trade mirroring, and settlement."""
+"""Challenge creation, participation, submission, dedicated trading, and settlement."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from challenge_scoring import score_challenge_results
+from challenge_scoring import score_agent_trades, score_challenge_results
 from database import begin_write_transaction, get_db_connection
 from experiment_events import record_event
 from rewards import grant_agent_reward
@@ -518,50 +518,169 @@ def record_challenge_submission_from_signal(
     )
 
 
-def record_challenge_trades_for_signal(
-    cursor: Any,
-    *,
-    agent_id: int,
-    source_signal_id: int,
-    market: str,
-    symbol: str,
-    side: str,
-    price: float,
-    quantity: float,
-    executed_at: str,
-) -> list[dict[str, Any]]:
-    refresh_challenge_statuses(cursor)
-    cursor.execute(
-        """
-        SELECT c.*, cp.variant_key
-        FROM challenges c
-        JOIN challenge_participants cp ON cp.challenge_id = c.id
-        WHERE cp.agent_id = ?
-          AND cp.status IN ('joined', 'active')
-          AND c.status = 'active'
-          AND c.market = ?
-          AND (c.symbol IS NULL OR c.symbol = '' OR c.symbol = 'all' OR c.symbol = ?)
-          AND c.start_at <= ?
-          AND c.end_at >= ?
-        ORDER BY c.id
-        """,
-        (agent_id, market, symbol, executed_at, executed_at),
-    )
-    challenges = cursor.fetchall()
-    recorded: list[dict[str, Any]] = []
-    for challenge_row in challenges:
-        challenge = _row_dict(challenge_row)
+def _normalize_challenge_trade_symbol(challenge: dict[str, Any], raw_symbol: Any) -> str:
+    fixed_symbol = str(challenge.get('symbol') or '').strip()
+    requested_symbol = str(raw_symbol or '').strip()
+    if fixed_symbol and fixed_symbol.lower() != 'all':
+        symbol = fixed_symbol
+        if requested_symbol:
+            compare_requested = requested_symbol if challenge['market'] == 'polymarket' else requested_symbol.upper()
+            compare_fixed = fixed_symbol if challenge['market'] == 'polymarket' else fixed_symbol.upper()
+            if compare_requested != compare_fixed:
+                raise ChallengeError('Trade symbol does not match challenge symbol')
+    else:
+        symbol = requested_symbol
+    if not symbol:
+        raise ChallengeError('symbol is required for challenge trade')
+    return symbol if challenge['market'] == 'polymarket' else symbol.upper()
+
+
+def _serialize_challenge_portfolio(
+    challenge: dict[str, Any],
+    participant: dict[str, Any],
+    trades: list[dict[str, Any]],
+) -> dict[str, Any]:
+    scored = score_agent_trades(challenge, participant, trades)
+    metrics = scored.get('metrics') or {}
+    ending_value = scored.get('ending_value')
+    return {
+        'challenge': _serialize_challenge(challenge),
+        'participant': participant,
+        'portfolio': {
+            'starting_cash': scored.get('starting_cash'),
+            'cash': metrics.get('cash'),
+            'ending_value': ending_value,
+            'return_pct': scored.get('return_pct'),
+            'max_drawdown': scored.get('max_drawdown'),
+            'risk_adjusted_score': scored.get('risk_adjusted_score'),
+            'final_score': scored.get('final_score'),
+            'trade_count': scored.get('trade_count'),
+            'disqualified_reason': scored.get('disqualified_reason'),
+            'positions': metrics.get('positions') or [],
+            'equity_curve': metrics.get('equity_curve') or [],
+        },
+        'trades': trades,
+    }
+
+
+def get_agent_challenge_portfolio(challenge_key: str, agent_id: int) -> dict[str, Any]:
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        refresh_challenge_statuses(cursor)
+        conn.commit()
+        challenge = _load_challenge(cursor, challenge_key=challenge_key)
+        cursor.execute(
+            """
+            SELECT cp.*, a.name AS agent_name, a.identity_status AS agent_identity_status
+            FROM challenge_participants cp
+            JOIN agents a ON a.id = cp.agent_id
+            WHERE cp.challenge_id = ? AND cp.agent_id = ?
+            """,
+            (challenge['id'], agent_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ChallengeError('Agent must join challenge before viewing challenge portfolio')
+        participant = dict(row)
+        participant['agent_identity_status'] = agent_identity_status(row)
+        participant['agent_is_verified'] = agent_is_verified(row)
+        cursor.execute(
+            """
+            SELECT *
+            FROM challenge_trades
+            WHERE challenge_id = ? AND agent_id = ?
+            ORDER BY executed_at, id
+            """,
+            (challenge['id'], agent_id),
+        )
+        trades = [dict(trade) for trade in cursor.fetchall()]
+        return _serialize_challenge_portfolio(challenge, participant, trades)
+    finally:
+        conn.close()
+
+
+def create_challenge_trade(challenge_key: str, agent_id: int, data: Any) -> dict[str, Any]:
+    payload = _model_dump(data)
+    side = str(payload.get('side') or payload.get('action') or '').strip().lower()
+    if side not in {'buy', 'sell', 'short', 'cover'}:
+        raise ChallengeError('Unsupported challenge trade side')
+    try:
+        price = float(payload.get('price'))
+        quantity = float(payload.get('quantity'))
+    except Exception as exc:
+        raise ChallengeError('price and quantity are required') from exc
+    if price <= 0 or quantity <= 0:
+        raise ChallengeError('price and quantity must be positive')
+
+    executed_at = _iso(_parse_dt(payload.get('executed_at')) or datetime.now(timezone.utc))
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        begin_write_transaction(cursor)
+        refresh_challenge_statuses(cursor)
+        challenge = _load_challenge(cursor, challenge_key=challenge_key)
+        if challenge['status'] != 'active':
+            raise ChallengeError('Challenge is not active')
+        executed_dt = _parse_dt(executed_at)
+        if executed_dt < _parse_dt(challenge['start_at']) or executed_dt > _parse_dt(challenge['end_at']):
+            raise ChallengeError('Challenge trade must be inside challenge time window')
+
+        cursor.execute(
+            """
+            SELECT cp.*, a.name AS agent_name, a.identity_status AS agent_identity_status
+            FROM challenge_participants cp
+            JOIN agents a ON a.id = cp.agent_id
+            WHERE cp.challenge_id = ? AND cp.agent_id = ?
+            """,
+            (challenge['id'], agent_id),
+        )
+        row = cursor.fetchone()
+        if not row:
+            raise ChallengeError('Agent must join challenge before trading')
+        participant = dict(row)
+        participant['agent_identity_status'] = agent_identity_status(row)
+        participant['agent_is_verified'] = agent_is_verified(row)
+        if participant.get('status') not in {'joined', 'active'}:
+            raise ChallengeError('Challenge participant is not tradeable')
+
+        symbol = _normalize_challenge_trade_symbol(challenge, payload.get('symbol'))
+        cursor.execute(
+            """
+            SELECT *
+            FROM challenge_trades
+            WHERE challenge_id = ? AND agent_id = ?
+            ORDER BY executed_at, id
+            """,
+            (challenge['id'], agent_id),
+        )
+        existing_trades = [dict(trade) for trade in cursor.fetchall()]
+        proposed_trade = {
+            'id': (max([int(trade.get('id') or 0) for trade in existing_trades], default=0) + 1),
+            'market': challenge['market'],
+            'symbol': symbol,
+            'side': side,
+            'price': price,
+            'quantity': quantity,
+            'executed_at': executed_at,
+        }
+        simulated = score_agent_trades(challenge, participant, [*existing_trades, proposed_trade])
+        disqualified_reason = simulated.get('disqualified_reason')
+        allowed_rule_disqualifications = {'max_position_pct_exceeded', 'max_drawdown_pct_exceeded'}
+        if disqualified_reason and disqualified_reason not in allowed_rule_disqualifications:
+            raise ChallengeError(f"Challenge trade rejected: {simulated['disqualified_reason']}")
+
         cursor.execute(
             """
             INSERT INTO challenge_trades
             (challenge_id, agent_id, source_signal_id, market, symbol, side, price, quantity, executed_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 challenge['id'],
                 agent_id,
-                source_signal_id,
-                market,
+                challenge['market'],
                 symbol,
                 side,
                 price,
@@ -571,18 +690,28 @@ def record_challenge_trades_for_signal(
             ),
         )
         trade_id = cursor.lastrowid
+        content = (payload.get('content') or '').strip() or None
+        if content:
+            _create_submission_with_cursor(
+                cursor,
+                challenge,
+                agent_id,
+                'trade',
+                content,
+                None,
+                None,
+            )
         record_event(
-            'challenge_trade_recorded',
+            'challenge_trade_submitted',
             actor_agent_id=agent_id,
             object_type='challenge_trade',
             object_id=trade_id,
-            market=market,
+            market=challenge['market'],
             experiment_key=challenge.get('experiment_key'),
-            variant_key=challenge.get('variant_key'),
+            variant_key=participant.get('variant_key'),
             metadata={
                 'challenge_key': challenge['challenge_key'],
                 'challenge_id': challenge['id'],
-                'source_signal_id': source_signal_id,
                 'symbol': symbol,
                 'side': side,
                 'price': price,
@@ -590,8 +719,25 @@ def record_challenge_trades_for_signal(
             },
             cursor=cursor,
         )
-        recorded.append({'id': trade_id, 'challenge_key': challenge['challenge_key']})
-    return recorded
+        conn.commit()
+
+        cursor.execute(
+            """
+            SELECT *
+            FROM challenge_trades
+            WHERE challenge_id = ? AND agent_id = ?
+            ORDER BY executed_at, id
+            """,
+            (challenge['id'], agent_id),
+        )
+        trades = [dict(trade) for trade in cursor.fetchall()]
+        portfolio = _serialize_challenge_portfolio(challenge, participant, trades)
+        return {'trade': trades[-1], **portfolio}
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _fetch_participants_and_trades(cursor: Any, challenge_id: int) -> tuple[list[dict[str, Any]], dict[int, list[dict[str, Any]]]]:

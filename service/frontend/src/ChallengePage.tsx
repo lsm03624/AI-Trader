@@ -52,6 +52,16 @@ function defaultSymbolForTrack(value: string) {
   return 'BTC'
 }
 
+function fixedSymbolForChallenge(challenge: any) {
+  const symbol = String(challenge?.symbol || '').trim()
+  if (!symbol || symbol.toLowerCase() === 'all') return ''
+  return challenge?.market === 'polymarket' ? symbol : symbol.toUpperCase()
+}
+
+function defaultTradeSymbolForChallenge(challenge: any) {
+  return fixedSymbolForChallenge(challenge) || defaultSymbolForTrack(challenge?.market || 'crypto')
+}
+
 export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
   const { challengeKey } = useParams()
   const { language } = useLanguage()
@@ -62,6 +72,7 @@ export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
   const [leaderboard, setLeaderboard] = useState<any[]>([])
   const [submissions, setSubmissions] = useState<any[]>([])
   const [myChallenges, setMyChallenges] = useState<any[]>([])
+  const [challengePortfolio, setChallengePortfolio] = useState<any | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -77,6 +88,13 @@ export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
     end_at: ''
   })
   const [submissionContent, setSubmissionContent] = useState('')
+  const [tradeForm, setTradeForm] = useState({
+    side: 'buy',
+    symbol: '',
+    price: '',
+    quantity: '',
+    content: ''
+  })
 
   const joinedChallengeIds = useMemo(
     () => new Set(myChallenges.map((item) => item.id)),
@@ -141,12 +159,32 @@ export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
       setDetail(detailData)
       setLeaderboard(leaderboardData.leaderboard || [])
       setSubmissions(submissionsData.submissions || [])
+      setTradeForm((current) => {
+        const fixedSymbol = fixedSymbolForChallenge(detailData)
+        return {
+          ...current,
+          symbol: fixedSymbol || current.symbol || defaultTradeSymbolForChallenge(detailData)
+        }
+      })
+      if (token) {
+        const portfolioRes = await fetch(`${API_BASE}/challenges/${challengeKey}/portfolio`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        })
+        if (portfolioRes.ok) {
+          setChallengePortfolio(await portfolioRes.json())
+        } else {
+          setChallengePortfolio(null)
+        }
+      } else {
+        setChallengePortfolio(null)
+      }
       setError(null)
     } catch (err: any) {
       setError(err?.message || (language === 'zh' ? '挑战详情加载失败' : 'Failed to load challenge detail'))
       setDetail(null)
       setLeaderboard([])
       setSubmissions([])
+      setChallengePortfolio(null)
     } finally {
       setLoading(false)
     }
@@ -262,12 +300,59 @@ export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
     }
   }
 
+  const handleChallengeTrade = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!token || !detail) return
+    const price = Number(tradeForm.price)
+    const quantity = Number(tradeForm.quantity)
+    if (!Number.isFinite(price) || price <= 0 || !Number.isFinite(quantity) || quantity <= 0) {
+      alert(language === 'zh' ? '价格和数量必须为正数' : 'Price and quantity must be positive')
+      return
+    }
+    setBusy(true)
+    try {
+      const symbol = fixedSymbolForChallenge(detail) || tradeForm.symbol.trim()
+      const res = await fetch(`${API_BASE}/challenges/${detail.challenge_key}/trade`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          side: tradeForm.side,
+          symbol: symbol || undefined,
+          price,
+          quantity,
+          content: tradeForm.content.trim() || undefined
+        })
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'challenge_trade_failed')
+      setChallengePortfolio(data)
+      setTradeForm((current) => ({
+        ...current,
+        price: '',
+        quantity: '',
+        content: ''
+      }))
+      await loadDetail()
+    } catch (err: any) {
+      alert(err?.message || (language === 'zh' ? '挑战交易失败' : 'Challenge trade failed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   if (loading) {
     return <div className="loading"><div className="spinner"></div></div>
   }
 
   if (challengeKey && detail) {
     const isJoined = joinedChallengeIds.has(detail.id) || (detail.participants || []).some((item: any) => myChallenges.some((mine) => mine.id === item.challenge_id))
+    const lockedSymbol = fixedSymbolForChallenge(detail)
+    const portfolio = challengePortfolio?.portfolio || null
+    const positions = Array.isArray(portfolio?.positions) ? portfolio.positions : []
+    const trades = Array.isArray(challengePortfolio?.trades) ? challengePortfolio.trades.slice(-6).reverse() : []
 
     return (
       <div className="challenge-page">
@@ -381,6 +466,131 @@ export function ChallengePage({ token, canAdmin = false }: ChallengePageProps) {
             <pre className="challenge-rules-json">{JSON.stringify(detail.rules || {}, null, 2)}</pre>
           </aside>
         </div>
+
+        {token && isJoined && (
+          <div className={`challenge-trading-grid ${detail.status !== 'active' ? 'challenge-trading-grid-single' : ''}`}>
+            {detail.status === 'active' && (
+              <section className="challenge-panel">
+                <div className="challenge-section-header">
+                  <h2>{language === 'zh' ? '挑战交易' : 'Challenge Trade'}</h2>
+                  <span className="challenge-badge">{marketLabel(detail.market, language)}</span>
+                </div>
+                <form className="challenge-trade-form" onSubmit={handleChallengeTrade}>
+                  <label className="challenge-field">
+                    <span>{language === 'zh' ? '方向' : 'Side'}</span>
+                    <select
+                      className="form-input"
+                      value={tradeForm.side}
+                      onChange={(event) => setTradeForm({ ...tradeForm, side: event.target.value })}
+                    >
+                      <option value="buy">{language === 'zh' ? '买入' : 'Buy'}</option>
+                      <option value="sell">{language === 'zh' ? '卖出' : 'Sell'}</option>
+                      {detail.market !== 'polymarket' && (
+                        <>
+                          <option value="short">{language === 'zh' ? '做空' : 'Short'}</option>
+                          <option value="cover">{language === 'zh' ? '平空' : 'Cover'}</option>
+                        </>
+                      )}
+                    </select>
+                  </label>
+                  <label className="challenge-field">
+                    <span>Symbol</span>
+                    <input
+                      className="form-input"
+                      value={lockedSymbol || tradeForm.symbol}
+                      disabled={Boolean(lockedSymbol)}
+                      onChange={(event) => setTradeForm({
+                        ...tradeForm,
+                        symbol: detail.market === 'polymarket' ? event.target.value : event.target.value.toUpperCase()
+                      })}
+                      placeholder={defaultTradeSymbolForChallenge(detail) || 'symbol'}
+                    />
+                  </label>
+                  <label className="challenge-field">
+                    <span>{language === 'zh' ? '价格' : 'Price'}</span>
+                    <input
+                      className="form-input"
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={tradeForm.price}
+                      onChange={(event) => setTradeForm({ ...tradeForm, price: event.target.value })}
+                      required
+                    />
+                  </label>
+                  <label className="challenge-field">
+                    <span>{language === 'zh' ? '数量' : 'Quantity'}</span>
+                    <input
+                      className="form-input"
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={tradeForm.quantity}
+                      onChange={(event) => setTradeForm({ ...tradeForm, quantity: event.target.value })}
+                      required
+                    />
+                  </label>
+                  <textarea
+                    className="form-textarea challenge-trade-note"
+                    value={tradeForm.content}
+                    onChange={(event) => setTradeForm({ ...tradeForm, content: event.target.value })}
+                    placeholder={language === 'zh' ? '交易备注' : 'Trade note'}
+                  />
+                  <button className="btn btn-primary" disabled={busy} type="submit">
+                    {language === 'zh' ? '提交交易' : 'Submit trade'}
+                  </button>
+                </form>
+              </section>
+            )}
+
+            <section className="challenge-panel challenge-portfolio-panel">
+              <div className="challenge-section-header">
+                <h2>{language === 'zh' ? '挑战持仓' : 'Challenge Portfolio'}</h2>
+                <span className="challenge-badge">{portfolio?.disqualified_reason || (language === 'zh' ? '进行中' : 'Live')}</span>
+              </div>
+              <div className="challenge-portfolio-grid">
+                <div><span>{language === 'zh' ? '现金' : 'Cash'}</span><strong>{formatMoney(portfolio?.cash)}</strong></div>
+                <div><span>{language === 'zh' ? '净值' : 'Value'}</span><strong>{formatMoney(portfolio?.ending_value)}</strong></div>
+                <div>
+                  <span>{language === 'zh' ? '收益' : 'Return'}</span>
+                  <strong className={(portfolio?.return_pct || 0) >= 0 ? 'challenge-positive' : 'challenge-negative'}>{formatPct(portfolio?.return_pct)}</strong>
+                </div>
+                <div><span>{language === 'zh' ? '最大回撤' : 'Max DD'}</span><strong>{formatPct(portfolio?.max_drawdown)}</strong></div>
+                <div><span>{language === 'zh' ? '交易数' : 'Trades'}</span><strong>{portfolio?.trade_count || 0}</strong></div>
+              </div>
+
+              <div className="challenge-position-list">
+                <h3>{language === 'zh' ? '持仓' : 'Positions'}</h3>
+                {positions.length === 0 ? (
+                  <div className="empty-state challenge-empty-compact">
+                    <div className="empty-title">{language === 'zh' ? '暂无持仓' : 'No positions'}</div>
+                  </div>
+                ) : (
+                  positions.map((position: any) => (
+                    <div key={`${position.market}-${position.symbol}-${position.side || 'long'}`} className="challenge-position-row">
+                      <span>{position.symbol}</span>
+                      <span>{position.side || 'long'}</span>
+                      <strong>{Number(position.quantity || 0).toLocaleString()}</strong>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {trades.length > 0 && (
+                <div className="challenge-position-list">
+                  <h3>{language === 'zh' ? '最近交易' : 'Recent Trades'}</h3>
+                  {trades.map((trade: any) => (
+                    <div key={trade.id} className="challenge-position-row">
+                      <span>{trade.side} {trade.symbol}</span>
+                      <span>{formatMoney(trade.price)}</span>
+                      <strong>{Number(trade.quantity || 0).toLocaleString()}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        )}
 
         <section className="challenge-panel">
           <div className="challenge-section-header">

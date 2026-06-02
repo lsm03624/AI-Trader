@@ -7,7 +7,7 @@ from fastapi import FastAPI, Header, HTTPException
 from zoneinfo import ZoneInfo
 
 from cache import get_json, set_json
-from challenges import ChallengeError, record_challenge_submission_from_signal, record_challenge_trades_for_signal
+from challenges import ChallengeError, record_challenge_submission_from_signal
 from config import (
     DISCUSSION_PUBLISH_REWARD,
     REPLY_PUBLISH_REWARD,
@@ -243,7 +243,6 @@ def register_signal_routes(app: FastAPI, ctx: RouteContext) -> None:
         trade_value = price * qty
         fee = trade_value * TRADE_FEE_RATE
         position_entry_price = None
-        challenge_trade_count = 0
         reward_points = SIGNAL_PUBLISH_REWARD
         reward_context = experiment_contexts[0] if experiment_contexts else None
         reward_metadata: dict[str, Any] = {'reward_mode': 'fixed', 'base_points': SIGNAL_PUBLISH_REWARD}
@@ -329,17 +328,6 @@ def register_signal_routes(app: FastAPI, ctx: RouteContext) -> None:
                 cover_credit = ((2 * position_entry_price) - price) * qty - fee
                 cursor.execute('UPDATE agents SET cash = cash + ? WHERE id = ?', (cover_credit, agent_id))
 
-            challenge_trade_count += len(record_challenge_trades_for_signal(
-                cursor,
-                agent_id=agent_id,
-                source_signal_id=signal_id,
-                market=market,
-                symbol=symbol,
-                side=side,
-                price=price,
-                quantity=qty,
-                executed_at=executed_at,
-            ))
             signal_quality = score_signal_quality(
                 {
                     'signal_id': signal_id,
@@ -496,17 +484,6 @@ def register_signal_routes(app: FastAPI, ctx: RouteContext) -> None:
                         follower_net = ((2 * follower_entry_price) - price) * qty - follower_fee
                         cursor.execute('UPDATE agents SET cash = cash + ? WHERE id = ?', (follower_net, follower_id))
 
-                    challenge_trade_count += len(record_challenge_trades_for_signal(
-                        cursor,
-                        agent_id=follower_id,
-                        source_signal_id=follower_signal_id,
-                        market=market,
-                        symbol=symbol,
-                        side=side,
-                        price=price,
-                        quantity=qty,
-                        executed_at=executed_at,
-                    ))
                     score_signal_quality(
                         {
                             'signal_id': follower_signal_id,
@@ -569,7 +546,6 @@ def register_signal_routes(app: FastAPI, ctx: RouteContext) -> None:
             'points_earned': reward_points,
             'token_id': polymarket_token_id,
             'outcome': polymarket_outcome,
-            'challenge_trade_count': challenge_trade_count,
         }
         if market == 'polymarket':
             decorate_polymarket_item(payload, fetch_remote=fetch_price_in_request)
