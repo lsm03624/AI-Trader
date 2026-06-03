@@ -675,11 +675,12 @@ def create_challenge_trade(challenge_key: str, agent_id: int, data: Any) -> dict
             """
             INSERT INTO challenge_trades
             (challenge_id, agent_id, source_signal_id, market, symbol, side, price, quantity, executed_at, created_at)
-            VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 challenge['id'],
                 agent_id,
+                None,
                 challenge['market'],
                 symbol,
                 side,

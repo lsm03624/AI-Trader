@@ -147,13 +147,13 @@ class ChallengeTests(unittest.TestCase):
 
         result = self._submit_challenge_trade(challenge["challenge_key"], self.agent_2, "buy", 100.0, 2.0)
 
-        self.assertEqual(result["trade"]["source_signal_id"], 0)
+        self.assertIsNone(result["trade"]["source_signal_id"])
         self.assertEqual(result["portfolio"]["trade_count"], 1)
         self.assertAlmostEqual(result["portfolio"]["cash"], 800.0)
         self.assertEqual(result["portfolio"]["positions"][0]["quantity"], 2.0)
         conn = database.get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM challenge_trades WHERE source_signal_id = 0")
+        cursor.execute("SELECT * FROM challenge_trades WHERE source_signal_id IS NULL")
         row = cursor.fetchone()
         self.assertIsNotNone(row)
         self.assertEqual(row["challenge_id"], challenge["id"])

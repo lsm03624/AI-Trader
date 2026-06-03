@@ -359,6 +359,45 @@ def get_database_status() -> dict[str, Any]:
         conn.close()
 
 
+def _ensure_challenge_trades_source_signal_nullable(cursor: Any) -> None:
+    """Allow dedicated challenge trades that do not originate from a signal."""
+    if using_postgres():
+        cursor.execute("ALTER TABLE challenge_trades ALTER COLUMN source_signal_id DROP NOT NULL")
+        return
+
+    cursor.execute("PRAGMA table_info(challenge_trades)")
+    columns = cursor.fetchall()
+    source_column = next((column for column in columns if column["name"] == "source_signal_id"), None)
+    if not source_column or not int(source_column["notnull"] or 0):
+        return
+
+    cursor.execute("ALTER TABLE challenge_trades RENAME TO challenge_trades_notnull_backup")
+    cursor.execute("""
+        CREATE TABLE challenge_trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            challenge_id INTEGER NOT NULL,
+            agent_id INTEGER NOT NULL,
+            source_signal_id INTEGER,
+            market TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price REAL NOT NULL,
+            quantity REAL NOT NULL,
+            executed_at TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now')),
+            FOREIGN KEY (challenge_id) REFERENCES challenges(id),
+            FOREIGN KEY (agent_id) REFERENCES agents(id)
+        )
+    """)
+    cursor.execute("""
+        INSERT INTO challenge_trades
+        (id, challenge_id, agent_id, source_signal_id, market, symbol, side, price, quantity, executed_at, created_at)
+        SELECT id, challenge_id, agent_id, source_signal_id, market, symbol, side, price, quantity, executed_at, created_at
+        FROM challenge_trades_notnull_backup
+    """)
+    cursor.execute("DROP TABLE challenge_trades_notnull_backup")
+
+
 def init_database():
     """Initialize database schema."""
     conn = get_db_connection()
@@ -789,7 +828,7 @@ def init_database():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             challenge_id INTEGER NOT NULL,
             agent_id INTEGER NOT NULL,
-            source_signal_id INTEGER NOT NULL,
+            source_signal_id INTEGER,
             market TEXT NOT NULL,
             symbol TEXT NOT NULL,
             side TEXT NOT NULL,
@@ -819,6 +858,8 @@ def init_database():
             FOREIGN KEY (agent_id) REFERENCES agents(id)
         )
     """)
+
+    _ensure_challenge_trades_source_signal_nullable(cursor)
 
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS signal_predictions (
